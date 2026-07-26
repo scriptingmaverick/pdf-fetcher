@@ -23,8 +23,6 @@ spec:
 
     - name: model-server
       image: ollama/ollama:latest
-      command: ["sh", "-c"]
-      args: ["sleep infinity"]
       env:
         - name: MODEL_SERVER_PROVIDER
           value: "ollama"
