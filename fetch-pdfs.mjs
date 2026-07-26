@@ -121,7 +121,7 @@ async function main() {
   }
 
   const { session } = await createAgentSession({
-    resourceLoader: new DefaultResourceLoader({cwd: process.cwd()}),
+    resourceLoader: new DefaultResourceLoader({cwd: process.cwd(), agentDir: process.cwd()}),
     sessionManager: SessionManager.create(process.cwd()),
     customTools: [searchWebTool],
   });
