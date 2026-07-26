@@ -2,6 +2,8 @@
 set -euo pipefail
 
 JENKINS_URL="${JENKINS_URL:-http://localhost:32080}"
+JENKINS_USER="${JENKINS_USER:-admin}"
+JENKINS_API_TOKEN="${JENKINS_API_TOKEN:-11a92c90c9d07ecaef7ffacdb1f7e35fd6}"
 JOB_NAME="${JOB_NAME:-pdf-fetcher-local-pipeline}"
 JENKINSFILE_PATH="${JENKINSFILE_PATH:-Jenkinsfile}"
 LOCAL_REPO_PATH="${LOCAL_REPO_PATH:-/workspace/repo}"
@@ -34,7 +36,36 @@ check_jenkins_reachable() {
 }
 
 jcurl() {
-    curl -fsS -b "${COOKIE_JAR}" -c "${COOKIE_JAR}" "$@"
+    if [[ -n "${JENKINS_USER}" && -n "${JENKINS_API_TOKEN}" ]]; then
+        curl -fsS -u "${JENKINS_USER}:${JENKINS_API_TOKEN}" -b "${COOKIE_JAR}" -c "${COOKIE_JAR}" "$@"
+    else
+        curl -fsS -b "${COOKIE_JAR}" -c "${COOKIE_JAR}" "$@"
+    fi
+}
+
+login_to_jenkins() {
+    if [[ -z "${JENKINS_USER}" || -z "${JENKINS_API_TOKEN}" ]]; then
+        echo "ERROR: JENKINS_USER and JENKINS_API_TOKEN are required when Jenkins requires authentication." >&2
+        echo "Set them as environment variables:" >&2
+        echo "  export JENKINS_USER=your_username" >&2
+        echo "  export JENKINS_API_TOKEN=your_api_token" >&2
+        exit 1
+    fi
+
+    echo "Authenticating with Jenkins..."
+    local login_response
+    login_response="$(jcurl -X POST \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        -d "j_username=${JENKINS_USER}&j_password=${JENKINS_API_TOKEN}" \
+        "${JENKINS_URL}/j_spring_security_check" \
+        -o /dev/null -w "%{http_code}")"
+
+    if [[ "${login_response}" != "302" && "${login_response}" != "200" ]]; then
+        echo "ERROR: Jenkins authentication failed (HTTP ${login_response})." >&2
+        exit 1
+    fi
+
+    echo "Authenticated successfully."
 }
 
 get_crumb_header() {
@@ -178,6 +209,7 @@ main() {
     check_jenkins_reachable
     COOKIE_JAR="$(mktemp)"
     trap 'rm -f "${COOKIE_JAR}"' EXIT
+    login_to_jenkins
     local crumb_header
     crumb_header="$(get_crumb_header)"
     create_or_update_job "${crumb_header}"
