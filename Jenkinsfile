@@ -177,8 +177,8 @@ spec:
             steps {
                 container('coding-agent') {
                     withEnv([
-                        "SEARCH_TEXT='${SEARCH_TEXT}'",
-                        "MAX_RESULTS='${MAX_RESULTS}'",
+                        "SEARCH_TEXT=${SEARCH_TEXT}",
+                        "MAX_RESULTS=${MAX_RESULTS}",
                         "MODEL_SERVER_BASE_URL=http://localhost:11434/v1",
                         "MODEL_SERVER_PROVIDER=ollama",
                         "MODEL_NAME=qwen3.5:9b",
