@@ -143,18 +143,22 @@ spec:
                 container('model-server') {
                     sh '''
                         echo "Waiting for Ollama to be ready..."
-                        for i in $(seq 1 60); do
+                        for i in $(seq 1 12); do
                             if curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
                                 echo "Ollama is ready"
                                 break
                             fi
-                            echo "Waiting for Ollama... ($i/60)"
+                            echo "Waiting for Ollama... ($i/12)"
                             sleep 5
                         done
-                        MODEL_SERVER_PROVIDER="${MODEL_SERVER_PROVIDER}" \
-                        MODEL_NAME="${MODEL_NAME}" \
-                        MODEL_SERVER_MODEL_ID="${MODEL_SERVER_MODEL_ID}" \
-                        ollama pull "${MODEL_NAME}" 2>/dev/null || echo "Model pull skipped or already present"
+                        if ollama list | grep -q "${MODEL_NAME}"; then
+                            echo "Model ${MODEL_NAME} already present, skipping pull."
+                        else
+                            MODEL_SERVER_PROVIDER="${MODEL_SERVER_PROVIDER}" \
+                            MODEL_NAME="${MODEL_NAME}" \
+                            MODEL_SERVER_MODEL_ID="${MODEL_SERVER_MODEL_ID}" \
+                            ollama pull "${MODEL_NAME}"
+                        fi
                     '''
                 }
             }
