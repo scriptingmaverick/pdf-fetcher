@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+JENKINS_URL="${JENKINS_URL:-http://localhost:32080}"
+JOB_NAME="${JOB_NAME:-pdf-fetcher-local-pipeline}"
+JENKINSFILE_PATH="${JENKINSFILE_PATH:-Jenkinsfile}"
+LOCAL_REPO_PATH="${LOCAL_REPO_PATH:-/workspace/repo}"
+GIT_BRANCH="${GIT_BRANCH:-main}"
+COOKIE_JAR=""
+
+require_binary() {
+    local bin_name="$1"
+    if ! command -v "${bin_name}" >/dev/null 2>&1; then
+        echo "ERROR: required binary '${bin_name}' not found in PATH." >&2
+        exit 1
+    fi
+}
+
+validate_inputs() {
+    require_binary curl
+    require_binary python3
+
+    if [[ ! -f "${JENKINSFILE_PATH}" ]]; then
+        echo "ERROR: Jenkinsfile not found at '${JENKINSFILE_PATH}'." >&2
+        exit 1
+    fi
+}
+
+check_jenkins_reachable() {
+    if ! curl -fsS "${JENKINS_URL}/login" >/dev/null; then
+        echo "ERROR: Jenkins is not reachable at '${JENKINS_URL}'." >&2
+        exit 1
+    fi
+}
+
+jcurl() {
+    curl -fsS -b "${COOKIE_JAR}" -c "${COOKIE_JAR}" "$@"
+}
+
+get_crumb_header() {
+    local crumb_response
+    crumb_response="$(jcurl "${JENKINS_URL}/crumbIssuer/api/json")"
+
+    local crumb_field
+    crumb_field="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["crumbRequestField"])' <<< "${crumb_response}")"
+    local crumb
+    crumb="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["crumb"])' <<< "${crumb_response}")"
+    echo "${crumb_field}: ${crumb}"
+}
+
+render_job_config() {
+    python3 - <<'PY' "${LOCAL_REPO_PATH}" "${JENKINSFILE_PATH}"
+import html
+import uuid
+import sys
+
+repo_path = sys.argv[1]
+jenkinsfile_path = sys.argv[2]
+
+git_url = f"https://github.com/scriptingmaverick/pdf-fetcher.git"
+git_url_escaped = html.escape(git_url, quote=False)
+script_path_escaped = html.escape(jenkinsfile_path, quote=False)
+source_id = str(uuid.uuid4())
+
+config = f"""<?xml version='1.1' encoding='UTF-8'?>
+<org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject plugin="workflow-multibranch">
+  <actions/>
+  <description>Multibranch pipeline from mounted local repository.</description>
+  <properties/>
+  <folderViews class="jenkins.branch.MultiBranchProjectViewHolder" plugin="branch-api">
+    <owner class="org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject" reference="../.."/>
+  </folderViews>
+  <healthMetrics>
+    <com.cloudbees.hudson.plugins.folder.health.WorstChildHealthMetric plugin="cloudbees-folder">
+      <nonRecursive>false</nonRecursive>
+    </com.cloudbees.hudson.plugins.folder.health.WorstChildHealthMetric>
+  </healthMetrics>
+  <icon class="jenkins.branch.MetadataActionFolderIcon" plugin="branch-api"/>
+  <orphanedItemStrategy class="com.cloudbees.hudson.plugins.folder.computed.DefaultOrphanedItemStrategy">
+    <pruneDeadBranches>true</pruneDeadBranches>
+    <daysToKeep>-1</daysToKeep>
+    <numToKeep>-1</numToKeep>
+    <abortBuilds>false</abortBuilds>
+  </orphanedItemStrategy>
+  <triggers>
+    <com.cloudbees.hudson.plugins.folder.computed.PeriodicFolderTrigger>
+      <spec>H/15 * * * *</spec>
+      <interval>900000</interval>
+    </com.cloudbees.hudson.plugins.folder.computed.PeriodicFolderTrigger>
+  </triggers>
+  <disabled>false</disabled>
+  <sources class="jenkins.branch.MultiBranchProject$BranchSourceList" plugin="branch-api">
+    <data>
+      <jenkins.branch.BranchSource>
+        <source class="jenkins.plugins.git.GitSCMSource" plugin="git">
+          <id>{source_id}</id>
+          <remote>{git_url_escaped}</remote>
+          <credentialsId></credentialsId>
+          <traits>
+            <jenkins.plugins.git.traits.BranchDiscoveryTrait/>
+          </traits>
+        </source>
+        <strategy class="jenkins.branch.DefaultBranchPropertyStrategy">
+          <properties class="empty-list"/>
+        </strategy>
+      </jenkins.branch.BranchSource>
+    </data>
+    <owner class="org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject" reference="../.."/>
+  </sources>
+  <factory class="org.jenkinsci.plugins.workflow.multibranch.WorkflowBranchProjectFactory" plugin="workflow-multibranch">
+    <owner class="org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject" reference="../.."/>
+    <scriptPath>{script_path_escaped}</scriptPath>
+  </factory>
+</org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject>
+"""
+print(config)
+PY
+}
+
+create_or_update_job() {
+    local crumb_header="$1"
+    local config_file
+    config_file="$(mktemp)"
+    render_job_config > "${config_file}"
+
+    local status
+    status="$(curl -s -o /dev/null -w "%{http_code}" \
+        -b "${COOKIE_JAR}" -c "${COOKIE_JAR}" \
+        "${JENKINS_URL}/job/${JOB_NAME}/api/json")"
+
+    local job_class
+    if [[ "${status}" == "200" ]]; then
+        job_class="$(jcurl "${JENKINS_URL}/job/${JOB_NAME}/api/json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("_class",""))')"
+        if [[ "${job_class}" != "org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject" ]]; then
+            echo "ERROR: Existing job '${JOB_NAME}' is type '${job_class}', not multibranch." >&2
+            echo "Delete or rename it, then rerun this script." >&2
+            exit 1
+        fi
+    fi
+
+    if [[ "${status}" == "200" ]]; then
+        jcurl -X POST \
+            -H "${crumb_header}" \
+            -H "Content-Type: application/xml" \
+            --data-binary "@${config_file}" \
+            "${JENKINS_URL}/job/${JOB_NAME}/config.xml" >/dev/null
+        echo "Updated existing multibranch pipeline '${JOB_NAME}'."
+    else
+        jcurl -X POST \
+            -H "${crumb_header}" \
+            -H "Content-Type: application/xml" \
+            --data-binary "@${config_file}" \
+            "${JENKINS_URL}/createItem?name=${JOB_NAME}" >/dev/null
+        echo "Created new multibranch pipeline '${JOB_NAME}'."
+    fi
+
+    jcurl -X POST -H "${crumb_header}" "${JENKINS_URL}/job/${JOB_NAME}/build?delay=0sec" >/dev/null
+
+    rm -f "${config_file}"
+}
+
+print_next_steps() {
+    cat <<EOF
+Multibranch pipeline is ready.
+Jenkins URL           : ${JENKINS_URL}
+Multibranch job       : ${JOB_NAME}
+SCM URL      : file://${LOCAL_REPO_PATH}
+Script path  : ${JENKINSFILE_PATH}
+Branch source scope   : all branches (indexed)
+
+Indexing has been triggered. Open:
+${JENKINS_URL}/job/${JOB_NAME}/build?delay=0sec
+EOF
+}
+
+main() {
+    validate_inputs
+    check_jenkins_reachable
+    COOKIE_JAR="$(mktemp)"
+    trap 'rm -f "${COOKIE_JAR}"' EXIT
+    local crumb_header
+    crumb_header="$(get_crumb_header)"
+    create_or_update_job "${crumb_header}"
+    print_next_steps
+}
+
+main "$@"
