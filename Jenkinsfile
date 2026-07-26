@@ -165,7 +165,7 @@ spec:
                 container('coding-agent') {
                     sh '''
                         export PATH="/npm-global/bin:$PATH"
-                        npm install @earendil-works/pi-coding-agent
+                        npm install
                     '''
                 }
             }

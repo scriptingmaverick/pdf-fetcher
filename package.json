@@ -1,0 +1,9 @@
+{
+  "name": "pdf-fetcher",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.82.1",
+    "@sinclair/typebox": "^0.34.0"
+  }
+}
